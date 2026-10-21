@@ -55,6 +55,22 @@ class SegmentTree:
         node.right = self._build_tree(mid + 1, end)
         return node
 
+    def query_range(self, query_start, query_end):
+        result_tx_ids = []
+        self._query_recursive(self.root, query_start, query_end, result_tx_ids)
+        return result_tx_ids
+
+    def _query_recursive(self, node, q_start, q_end, result):
+        if not node or node.start_time > q_end or node.end_time < q_start:
+            return
+        if q_start <= node.start_time and node.end_time <= q_end:
+            result.extend(node.tx_indices)
+            return
+        if node.left:
+            self._query_recursive(node.left, q_start, q_end, result)
+        if node.right:
+            self._query_recursive(node.right, q_start, q_end, result)
+
     def insert(self, tx):
         self._insert_recursive(self.root, tx)
 
