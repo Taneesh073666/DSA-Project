@@ -14,11 +14,15 @@ class Transaction:
         self.timestamp = timestamp
         self.original_time_str = original_time_str
 
+    # Time Complexity: O(1)
+    # Explanation: String formatting operates on a fixed set of attributes.
     def __str__(self):
         return f"Tx #{self.id:<2} | {self.sender:<12} -> {self.receiver:<12} | ${self.amount:>9.2f} | Time = {self.original_time_str} ({self.timestamp} min)"
 
 
 class TemporalEdge:
+    # Time Complexity: O(1)
+    # Explanation: Basic field initialization.
     def __init__(self, tx_id, target, amount, timestamp, time_str):
         self.tx_id = tx_id
         self.target = target
@@ -32,6 +36,8 @@ class TemporalEdge:
 # ==========================================
 
 class SegmentTreeNode:
+    # Time Complexity: O(1)
+    # Explanation: Initializes node properties and empty list pointers.
     def __init__(self, start_time, end_time):
         self.start_time = start_time
         self.end_time = end_time
@@ -41,9 +47,13 @@ class SegmentTreeNode:
 
 
 class SegmentTree:
+    # Time Complexity: O(M) where M is the timeline range (max_time - min_time).
+    # Explanation: Calls recursive tree construction over the range [0, 1440].
     def __init__(self, min_time, max_time):
         self.root = self._build_tree(min_time, max_time)
 
+    # Time Complexity: O(M) where M = end - start + 1
+    # Explanation: Builds a balanced binary tree where total nodes created = 2*M - 1.
     def _build_tree(self, start, end):
         if start > end:
             return None
@@ -55,9 +65,13 @@ class SegmentTree:
         node.right = self._build_tree(mid + 1, end)
         return node
 
+    # Time Complexity: O(log M) where M is the time range duration (1440 minutes).
+    # Explanation: Delegates to _insert_recursive which traverses down tree height log2(M).
     def insert(self, tx):
         self._insert_recursive(self.root, tx)
 
+    # Time Complexity: O(log M) where M = 1440.
+    # Explanation: Tree height is log2(1440) ≈ 11 steps. At each step, moves left or right.
     def _insert_recursive(self, node, tx):
         if not node or tx.timestamp < node.start_time or tx.timestamp > node.end_time:
             return
@@ -70,6 +84,8 @@ class SegmentTree:
         else:
             self._insert_recursive(node.right, tx)
 
+    # Time Complexity: O(N) where N is the number of non-empty tree nodes.
+    # Explanation: Traverses all populated tree nodes to display formatted hierarchy.
     def print_tree_summary(self):
         print("\n+---------------------------------------------------------------------------------+")
         print("|            SEGMENT TREE TEMPORAL HIERARCHY INDEX (O(log N) QUERY ENGINE)         |")
@@ -77,6 +93,8 @@ class SegmentTree:
         self._print_node_clean(self.root, "", True)
         print("+---------------------------------------------------------------------------------+\n")
 
+    # Time Complexity: O(N) where N is the number of non-empty nodes in the segment tree.
+    # Explanation: Performs a Depth-First Search (DFS) traversal over non-empty tree segments.
     def _print_node_clean(self, node, prefix, is_tail):
         if not node:
             return
@@ -100,17 +118,23 @@ class SegmentTree:
 # ==========================================
 
 class TemporalMultiGraph:
+    # Time Complexity: O(1)
+    # Explanation: Initializes default dictionary for graph adjacency list.
     def __init__(self):
         self.adj_list = defaultdict(list)
 
+    # Time Complexity: O(1) amortized
+    # Explanation: Appends a new edge object to the adjacency list key.
     def add_edge(self, sender, receiver, amount, timestamp, time_str, tx_id):
         if receiver not in self.adj_list:
             self.adj_list[receiver] = []
         self.adj_list[sender].append(TemporalEdge(tx_id, receiver, amount, timestamp, time_str))
 
+    # Time Complexity: O(V log V + E) where V is the number of accounts and E is total transactions.
+    # Explanation: Sorts V account nodes (O(V log V)) and iterates over all E outgoing edges.
     def print_dynamic_graph_topology(self):
         print("\n+---------------------------------------------------------------------------------+")
-        print("|             DYNAMIC TEMPORAL MULTI-DIRECTED GRAPH TOPOLOGY MAP                  |")
+        print("|              DYNAMIC TEMPORAL MULTI-DIRECTED GRAPH TOPOLOGY MAP                  |")
         print("+---------------------------------------------------------------------------------+")
 
         if not self.adj_list:
@@ -122,10 +146,10 @@ class TemporalMultiGraph:
             edges = self.adj_list[node]
             print(f"\n [ Account Node: {node.upper()} ]")
             if not edges:
-                print("   └── (Sink Account / Cash-out Node - No Outgoing Transfers)")
+                print("    └── (Sink Account / Cash-out Node - No Outgoing Transfers)")
             else:
                 for i, e in enumerate(edges):
-                    connector = "   └── " if i == len(edges) - 1 else "   ├── "
+                    connector = "    └── " if i == len(edges) - 1 else "    ├── "
                     print(f"{connector}──( Tx #{e.tx_id:<2} | ${e.amount:>9.2f} | Time={e.time_str} )──► [ {e.target.upper()} ]")
         print("+---------------------------------------------------------------------------------+\n")
 
@@ -135,6 +159,8 @@ class TemporalMultiGraph:
 # ==========================================
 
 class PathStep:
+    # Time Complexity: O(1)
+    # Explanation: Field initialization for path trajectory tracking.
     def __init__(self, node, time, time_str, amount):
         self.node = node
         self.time = time
@@ -143,6 +169,8 @@ class PathStep:
 
 
 class ForensicReport:
+    # Time Complexity: O(1)
+    # Explanation: Simple object instance creation for output reporting.
     def __init__(self, path, total_duration, total_volume_in, total_volume_out, retention_ratio, risk_score, risk_category, typology_tag):
         self.path = path
         self.total_duration = total_duration
@@ -155,6 +183,8 @@ class ForensicReport:
 
 
 class FraudDetector:
+    # Time Complexity: O(1)
+    # Explanation: Member variable setup for Tarjan's SCC algorithm state.
     def __init__(self):
         self.index = 0
         self.indices = {}
@@ -163,6 +193,8 @@ class FraudDetector:
         self.on_stack = set()
         self.scc_list = []
 
+    # Time Complexity: O(V + E) where V is accounts and E is transaction edges.
+    # Explanation: Runs Tarjan's Strongly Connected Components algorithm across the graph.
     def find_mule_rings(self, graph):
         self.indices.clear()
         self.low_link.clear()
@@ -177,6 +209,8 @@ class FraudDetector:
 
         return [scc for scc in self.scc_list if len(scc) > 1]
 
+    # Time Complexity: O(V + E) cumulative across all recursive calls.
+    # Explanation: Every node is pushed/popped from the stack once; every edge is inspected once.
     def _strong_connect(self, u, graph):
         self.indices[u] = self.index
         self.low_link[u] = self.index
@@ -202,39 +236,26 @@ class FraudDetector:
                     break
             self.scc_list.append(scc)
 
+    # Time Complexity: O(V * (V + E)) worst-case for path search.
+    # Explanation: Explores valid temporal pass-through paths originating from each node V.
     def analyze_advanced_money_trails(self, graph, breach_time_minutes):
         reports = []
 
-        for start_node in graph.adj_list.keys():
-            trail = []
-            visited = set()
-            current = start_node
-            current_time = breach_time_minutes
-            initial_amount = 0.0
-            final_amount = 0.0
+        def dfs_trail(current, current_time, visited, current_path):
+            found_extension = False
+            for edge in graph.adj_list.get(current, []):
+                if edge.target not in visited and edge.timestamp >= breach_time_minutes and edge.timestamp >= current_time:
+                    found_extension = True
+                    step = PathStep(edge.target.upper(), edge.timestamp, edge.time_str, edge.amount)
+                    dfs_trail(edge.target, edge.timestamp, visited | {edge.target}, current_path + [step])
 
-            progress = True
-            while progress:
-                progress = False
-                for edge in graph.adj_list.get(current, []):
-                    if edge.target not in visited and edge.timestamp >= breach_time_minutes and edge.timestamp >= current_time:
-                        if not trail:
-                            initial_amount = edge.amount
-                            trail.append(PathStep(current.upper(), edge.timestamp, edge.time_str, edge.amount))
-                            visited.add(current)
+            if not found_extension and len(current_path) >= 3:
+                initial_amount = current_path[0].amount
+                final_amount = current_path[-1].amount
+                duration = current_path[-1].time - current_path[0].time
 
-                        current = edge.target
-                        current_time = edge.timestamp
-                        final_amount = edge.amount
-
-                        trail.append(PathStep(current.upper(), current_time, edge.time_str, final_amount))
-                        visited.add(current)
-                        progress = True
-                        break
-
-            if len(trail) >= 3:
-                duration = trail[-1].time - trail[0].time
-                retention_ratio = (final_amount / initial_amount) * 100.0 if initial_amount else 0.0
+                # Fixed Edge Case: Avoid ZeroDivisionError
+                retention_ratio = (final_amount / initial_amount) * 100.0 if initial_amount > 0 else 0.0
 
                 risk_score = 0
                 if duration <= 10: risk_score += 40
@@ -246,7 +267,7 @@ class FraudDetector:
                 elif retention_ratio >= 80.0: risk_score += 20
                 else: risk_score += 10
 
-                hops = len(trail) - 1
+                hops = len(current_path) - 1
                 if hops >= 4: risk_score += 30
                 elif hops == 3: risk_score += 20
                 else: risk_score += 10
@@ -264,11 +285,20 @@ class FraudDetector:
                     risk_category = "LOW RISK"
                     typology_tag = "Normal Sequential Commercial / Individual Payment Pace"
 
-                reports.append(ForensicReport(trail, duration, initial_amount, final_amount, 
+                reports.append(ForensicReport(current_path, duration, initial_amount, final_amount,
                                                retention_ratio, risk_score, risk_category, typology_tag))
+
+        for start_node in graph.adj_list.keys():
+            for edge in graph.adj_list.get(start_node, []):
+                if edge.timestamp >= breach_time_minutes:
+                    first_step = PathStep(start_node.upper(), edge.timestamp, edge.time_str, edge.amount)
+                    second_step = PathStep(edge.target.upper(), edge.timestamp, edge.time_str, edge.amount)
+                    dfs_trail(edge.target, edge.timestamp, {start_node, edge.target}, [first_step, second_step])
 
         return reports
 
+    # Time Complexity: O(T + A log A) where T is total transactions and A is unique accounts.
+    # Explanation: Iterates through T transactions to aggregate metrics, then sorts A accounts for display.
     def print_network_and_volume_summary(self, transactions, breach_time_minutes):
         if not transactions:
             return
@@ -317,13 +347,21 @@ class FraudDetector:
 # 5. MAIN MENU SYSTEM
 # ==========================================
 
+# Time Complexity: O(1)
+# Explanation: Performs string split and basic arithmetic conversions on fixed-length time strings.
 def convert_time_to_minutes(time_str):
     parts = time_str.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError("Invalid format")
     hours = int(parts[0])
     minutes = int(parts[1])
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        raise ValueError("Time out of range")
     return (hours * 60) + minutes
 
 
+# Time Complexity: O(K * Operations) where K is user menu interaction steps.
+# Explanation: Main loop runtime depends on user selections and volume of batch inputs processed.
 def main():
     master_transactions = []
     segment_tree = SegmentTree(0, 1440)
@@ -332,7 +370,7 @@ def main():
 
     while True:
         print("==================================================================================")
-        print("   ENTERPRISE AML SURVEILLANCE & FINANCIAL FRAUD ENGINE (V2.0 HIGH-TECH)")
+        print("    ENTERPRISE AML SURVEILLANCE & FINANCIAL FRAUD ENGINE (V2.0 HIGH-TECH)")
         print("==================================================================================")
         print("  1. Batch Ingest Transactions")
         print("  2. Display Dynamic Multi-Directed Graph Topology")
@@ -403,7 +441,7 @@ def main():
             try:
                 breach_time_minutes = convert_time_to_minutes(breach_time_str)
             except Exception:
-                print("[!] Invalid time format. Please use HH:mm (e.g., 08:35).\n")
+                print("[!] Invalid time format. Please use HH:mm between 00:00 and 23:59.\n")
                 continue
 
             print("\n==================================================================================")
