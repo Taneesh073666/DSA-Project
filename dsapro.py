@@ -1,18 +1,12 @@
 import sys
+import math
 from collections import defaultdict
+
+sys.setrecursionlimit(10000)   # Tarjan / segment-tree recursion safety for longer chains
 
 # ==========================================
 # 1. DATA MODELS
 # ==========================================
-class Config:
-    MAX_TIME_MINUTES = 1440
-    FAST_VELOCITY_LIMIT = 10
-    MEDIUM_VELOCITY_LIMIT = 30
-    SLOW_VELOCITY_LIMIT = 60
-    CRITICAL_THRESHOLD = 75
-    HIGH_THRESHOLD = 50
-    MEDIUM_THRESHOLD = 35
-
 
 class Transaction:
     def __init__(self, tx_id, sender, receiver, amount, timestamp, original_time_str):
@@ -64,22 +58,6 @@ class SegmentTree:
         node.right = self._build_tree(mid + 1, end)
         return node
 
-    def query_range(self, query_start, query_end):
-        result_tx_ids = []
-        self._query_recursive(self.root, query_start, query_end, result_tx_ids)
-        return result_tx_ids
-
-    def _query_recursive(self, node, q_start, q_end, result):
-        if not node or node.start_time > q_end or node.end_time < q_start:
-            return
-        if q_start <= node.start_time and node.end_time <= q_end:
-            result.extend(node.tx_indices)
-            return
-        if node.left:
-            self._query_recursive(node.left, q_start, q_end, result)
-        if node.right:
-            self._query_recursive(node.right, q_start, q_end, result)
-
     def insert(self, tx):
         self._insert_recursive(self.root, tx)
 
@@ -94,6 +72,20 @@ class SegmentTree:
             self._insert_recursive(node.left, tx)
         else:
             self._insert_recursive(node.right, tx)
+
+    # ---- NEW: real O(log N + k) range query ----
+    def query(self, l, r):
+        """Return the set of transaction IDs whose timestamp lies in [l, r]."""
+        return self._query(self.root, l, r)
+
+    def _query(self, node, l, r):
+        if not node or not node.tx_indices:            # empty subtree: prune
+            return set()
+        if r < node.start_time or l > node.end_time:   # no overlap
+            return set()
+        if l <= node.start_time and node.end_time <= r:  # fully covered: return whole bucket
+            return set(node.tx_indices)
+        return self._query(node.left, l, r) | self._query(node.right, l, r)
 
     def print_tree_summary(self):
         print("\n+---------------------------------------------------------------------------------+")
@@ -159,17 +151,11 @@ class TemporalMultiGraph:
 # 4. FORENSIC FRAUD ENGINE & NETWORK SUMMARY
 # ==========================================
 
-class PathStep:
-    def __init__(self, node, time, time_str, amount):
-        self.node = node
-        self.time = time
-        self.time_str = time_str
-        self.amount = amount
-
-
 class ForensicReport:
-    def __init__(self, path, total_duration, total_volume_in, total_volume_out, retention_ratio, risk_score, risk_category, typology_tag):
-        self.path = path
+    def __init__(self, start, edges, total_duration, total_volume_in, total_volume_out,
+                 retention_ratio, risk_score, risk_category, typology_tag):
+        self.start = start                    # starting account (lower case)
+        self.edges = edges                    # list of TemporalEdge, in time order
         self.total_duration = total_duration
         self.total_volume_in = total_volume_in
         self.total_volume_out = total_volume_out
@@ -178,8 +164,20 @@ class ForensicReport:
         self.risk_category = risk_category
         self.typology_tag = typology_tag
 
+    @property
+    def hops(self):
+        return len(self.edges)
+
+    def path_string(self):
+        parts = [self.start.upper()]
+        for e in self.edges:
+            parts.append(f"--[{e.time_str}, ${e.amount:.2f}]--> {e.target.upper()}")
+        return " ".join(parts)
+
 
 class FraudDetector:
+    MAX_HOPS = 10          # depth cap for chain search (keeps worst case bounded)
+
     def __init__(self):
         self.index = 0
         self.indices = {}
@@ -188,6 +186,7 @@ class FraudDetector:
         self.on_stack = set()
         self.scc_list = []
 
+    # ---------- Engine 1: Tarjan SCC ----------
     def find_mule_rings(self, graph):
         self.indices.clear()
         self.low_link.clear()
@@ -196,7 +195,7 @@ class FraudDetector:
         self.scc_list.clear()
         self.index = 0
 
-        for node in graph.adj_list.keys():
+        for node in list(graph.adj_list.keys()):
             if node not in self.indices:
                 self._strong_connect(node, graph)
 
@@ -222,82 +221,112 @@ class FraudDetector:
             while True:
                 w = self.stack.pop()
                 self.on_stack.remove(w)
-                scc.append(w.upper())
+                scc.append(w)                     # kept lower case; upper-cased only when printing
                 if w == u:
                     break
             self.scc_list.append(scc)
 
+    # ---------- NEW: computed ring score (replaces hard-coded 95) ----------
+    def score_ring(self, ring, graph):
+        members = set(ring)
+        volume = 0.0
+        times = []
+        for u in ring:
+            for e in graph.adj_list.get(u, []):
+                if e.target in members:
+                    volume += e.amount
+                    times.append(e.timestamp)
+        span = (max(times) - min(times)) if times else 0
+
+        size_pts = min(40, 10 * len(ring))                      # bigger ring = more layered
+        if volume >= 100000: vol_pts = 30
+        elif volume >= 10000: vol_pts = 20
+        else: vol_pts = 10
+        if span <= 60: vel_pts = 30
+        elif span <= 240: vel_pts = 20
+        else: vel_pts = 10
+
+        score = size_pts + vol_pts + vel_pts
+        if score >= 75: category = "CRITICAL RISK"
+        elif score >= 50: category = "HIGH RISK"
+        else: category = "MEDIUM RISK"
+        return score, category, volume, span
+
+    # ---------- Engine 2: maximal time-respecting chains ----------
+    def find_maximal_chains(self, graph, breach_time_minutes):
+        """All time-respecting chains with >= 2 hops that cannot be extended,
+        with chains that are just a part of a longer chain removed."""
+        chains = []
+
+        def dfs(start, node, last_time, visited, path):
+            extended = False
+            if len(path) < self.MAX_HOPS:
+                for e in graph.adj_list.get(node, []):
+                    if e.target not in visited and e.timestamp >= last_time and e.timestamp >= breach_time_minutes:
+                        extended = True
+                        visited.add(e.target)
+                        path.append(e)
+                        dfs(start, e.target, e.timestamp, visited, path)
+                        path.pop()
+                        visited.remove(e.target)
+            if not extended and len(path) >= 2:
+                chains.append((start, list(path)))
+
+        for start in list(graph.adj_list.keys()):
+            dfs(start, start, breach_time_minutes, {start}, [])
+
+        keys = [tuple(e.tx_id for e in p) for _, p in chains]
+
+        def is_part_of(a, b):
+            return len(a) < len(b) and any(b[i:i + len(a)] == a for i in range(len(b) - len(a) + 1))
+
+        return [c for c, k in zip(chains, keys) if not any(is_part_of(k, other) for other in keys)]
+
     def analyze_advanced_money_trails(self, graph, breach_time_minutes):
         reports = []
 
-        for start_node in graph.adj_list.keys():
-            trail = []
-            visited = set()
-            current = start_node
-            current_time = breach_time_minutes
-            initial_amount = 0.0
-            final_amount = 0.0
+        for start, edges in self.find_maximal_chains(graph, breach_time_minutes):
+            initial_amount = edges[0].amount
+            final_amount = edges[-1].amount
+            duration = edges[-1].timestamp - edges[0].timestamp
+            retention_ratio = (final_amount / initial_amount) * 100.0 if initial_amount else 0.0
 
-            progress = True
-            while progress:
-                progress = False
-                for edge in graph.adj_list.get(current, []):
-                    if edge.target not in visited and edge.timestamp >= breach_time_minutes and edge.timestamp >= current_time:
-                        if not trail:
-                            initial_amount = edge.amount
-                            trail.append(PathStep(current.upper(), edge.timestamp, edge.time_str, edge.amount))
-                            visited.add(current)
+            risk_score = 0
+            if duration <= 10: risk_score += 40
+            elif duration <= 30: risk_score += 30
+            elif duration <= 60: risk_score += 15
+            else: risk_score += 5
 
-                        current = edge.target
-                        current_time = edge.timestamp
-                        final_amount = edge.amount
+            if 90.0 <= retention_ratio <= 100.0: risk_score += 30      # FIXED: includes 99-100%
+            elif retention_ratio >= 80.0: risk_score += 20
+            else: risk_score += 10
 
-                        trail.append(PathStep(current.upper(), current_time, edge.time_str, final_amount))
-                        visited.add(current)
-                        progress = True
-                        break
+            hops = len(edges)
+            if hops >= 4: risk_score += 30
+            elif hops == 3: risk_score += 20
+            else: risk_score += 10
 
-            if len(trail) >= 3:
-                duration = trail[-1].time - trail[0].time
-                retention_ratio = (final_amount / initial_amount) * 100.0 if initial_amount else 0.0
+            if risk_score >= 75:
+                risk_category = "CRITICAL RISK"
+                typology_tag = "Automated High-Velocity Bot Layering"
+            elif risk_score >= 50:
+                risk_category = "HIGH RISK"
+                typology_tag = "Paid Human Mule Commission Pass-Through"
+            elif risk_score >= 35:
+                risk_category = "MEDIUM RISK"
+                typology_tag = "Delayed Intermediary Transfer (Needs Monitoring)"
+            else:
+                risk_category = "LOW RISK"
+                typology_tag = "Normal Sequential Commercial / Individual Payment Pace"
 
-                risk_score = 0
-                if duration <= 10: risk_score += 40
-                elif duration <= 30: risk_score += 30
-                elif duration <= 60: risk_score += 15
-                else: risk_score += 5
+            reports.append(ForensicReport(start, edges, duration, initial_amount, final_amount,
+                                          retention_ratio, risk_score, risk_category, typology_tag))
 
-                if 90.0 <= retention_ratio <= 99.0: risk_score += 30
-                elif retention_ratio >= 80.0: risk_score += 20
-                else: risk_score += 10
-
-                hops = len(trail) - 1
-                if hops >= 4: risk_score += 30
-                elif hops == 3: risk_score += 20
-                else: risk_score += 10
-
-                if risk_score >= 75:
-                    risk_category = "CRITICAL RISK"
-                    typology_tag = "Automated High-Velocity Bot Layering"
-                elif risk_score >= 50:
-                    risk_category = "HIGH RISK"
-                    typology_tag = "Paid Human Mule Commission Pass-Through"
-                elif risk_score >= 35:
-                    risk_category = "MEDIUM RISK"
-                    typology_tag = "Delayed Intermediary Transfer (Needs Monitoring)"
-                else:
-                    risk_category = "LOW RISK"
-                    typology_tag = "Normal Sequential Commercial / Individual Payment Pace"
-
-                reports.append(ForensicReport(trail, duration, initial_amount, final_amount, 
-                                               retention_ratio, risk_score, risk_category, typology_tag))
-
+        reports.sort(key=lambda r: r.risk_score, reverse=True)   # most dangerous first
         return reports
 
-    def print_network_and_volume_summary(self, transactions, breach_time_minutes):
-        if not transactions:
-            return
-
+    # ---------- Network summary (receives already-filtered post-breach transactions) ----------
+    def print_network_and_volume_summary(self, post_transactions, breach_time_minutes):
         unique_accounts = set()
         out_count = defaultdict(int)
         in_count = defaultdict(int)
@@ -306,13 +335,8 @@ class FraudDetector:
 
         min_time = float('inf')
         max_time = float('-inf')
-        post_breach_tx_count = 0
 
-        for tx in transactions:
-            if tx.timestamp < breach_time_minutes:
-                continue
-
-            post_breach_tx_count += 1
+        for tx in post_transactions:
             u = tx.sender.upper()
             v = tx.receiver.upper()
 
@@ -331,7 +355,7 @@ class FraudDetector:
         if max_time == float('-inf'): max_time = breach_time_minutes
 
         print(">>> [NETWORK & VOLUME SUMMARY]")
-        print(f"NETWORK: {len(unique_accounts)} accounts, {post_breach_tx_count} post-breach transactions, time span {min_time}-{max_time} min")
+        print(f"NETWORK: {len(unique_accounts)} accounts, {len(post_transactions)} post-breach transactions, time span {min_time}-{max_time} min")
         print(f"{'Account':<14} {'Out#':>5} {'In#':>5} {'Sent($)':>14} {'Received($)':>14}")
 
         for acc in sorted(unique_accounts):
@@ -343,10 +367,18 @@ class FraudDetector:
 # ==========================================
 
 def convert_time_to_minutes(time_str):
+    """'HH:mm' -> minutes after midnight. Raises ValueError if malformed or out of range."""
     parts = time_str.strip().split(":")
-    hours = int(parts[0])
-    minutes = int(parts[1])
-    return (hours * 60) + minutes
+    if len(parts) != 2:
+        raise ValueError("Time must be in HH:mm format (e.g. 08:35).")
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError:
+        raise ValueError("Time must be in HH:mm format (e.g. 08:35).")
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        raise ValueError("Time out of range: hours must be 00-23 and minutes 00-59.")
+    return hours * 60 + minutes
 
 
 def main():
@@ -357,7 +389,7 @@ def main():
 
     while True:
         print("==================================================================================")
-        print("   ENTERPRISE AML SURVEILLANCE & FINANCIAL FRAUD ENGINE (V2.0 HIGH-TECH)")
+        print("   ENTERPRISE AML SURVEILLANCE & FINANCIAL FRAUD ENGINE (V3.0)")
         print("==================================================================================")
         print("  1. Batch Ingest Transactions")
         print("  2. Display Dynamic Multi-Directed Graph Topology")
@@ -366,7 +398,7 @@ def main():
         print("  5. Clear Memory Buffer")
         print("  6. Exit")
         print("==================================================================================")
-        
+
         try:
             choice = int(input("Select action (1-6): ").strip())
         except ValueError:
@@ -389,27 +421,34 @@ def main():
                     continue
 
                 parts = line.split()
-                if len(parts) < 4:
-                    print("   [!] Format Error! Expected: Sender Receiver Amount Timestamp(HH:mm)")
+                if len(parts) != 4:
+                    print("   [!] Format Error! Expected exactly: Sender Receiver Amount Timestamp(HH:mm)")
                     continue
 
                 try:
                     sender = parts[0].lower()
                     receiver = parts[1].lower()
-                    amount = float(parts[2])
+                    try:
+                        amount = float(parts[2])
+                    except ValueError:
+                        raise ValueError("Amount must be a number.")
+                    if not math.isfinite(amount) or amount <= 0:
+                        raise ValueError("Amount must be a positive number.")
+                    if sender == receiver:
+                        raise ValueError("Sender and receiver must be different accounts.")
                     time_str = parts[3]
-
                     timestamp_minutes = convert_time_to_minutes(time_str)
-                    tx = Transaction(tx_counter, sender, receiver, amount, timestamp_minutes, time_str)
-                    
-                    master_transactions.append(tx)
-                    segment_tree.insert(tx)
-                    global_graph.add_edge(sender, receiver, amount, timestamp_minutes, time_str, tx.id)
+                except ValueError as err:
+                    print(f"   [!] Rejected: {err}")
+                    continue
 
-                    print(f"   [+] Ingested: {tx}")
-                    tx_counter += 1
-                except Exception:
-                    print("   [!] Parsing Error! Ensure Amount is numeric and Time is in HH:mm format (e.g. 08:35).")
+                tx = Transaction(tx_counter, sender, receiver, amount, timestamp_minutes, time_str)
+                master_transactions.append(tx)
+                segment_tree.insert(tx)
+                global_graph.add_edge(sender, receiver, amount, timestamp_minutes, time_str, tx.id)
+
+                print(f"   [+] Ingested: {tx}")
+                tx_counter += 1
 
             print(f"\n[+] Ingestion complete. Total Records: {len(master_transactions)}\n")
 
@@ -427,18 +466,22 @@ def main():
             breach_time_str = input("\nEnter Breach Timestamp (24hr format HH:mm, e.g. 08:35): ").strip()
             try:
                 breach_time_minutes = convert_time_to_minutes(breach_time_str)
-            except Exception:
-                print("[!] Invalid time format. Please use HH:mm (e.g., 08:35).\n")
+            except ValueError as err:
+                print(f"[!] {err}\n")
                 continue
 
             print("\n==================================================================================")
             print(f"          ENTERPRISE AML FORENSIC AUDIT (POST-BREACH TIME: {breach_time_str})")
             print("==================================================================================")
 
+            # Segment-tree range query selects post-breach transactions in O(log N + k)
+            post_ids = segment_tree.query(breach_time_minutes, 1440)
+            post_transactions = [tx for tx in master_transactions if tx.id in post_ids]
+            print(f"[i] Segment tree query [{breach_time_minutes}m - 1440m] returned {len(post_transactions)} post-breach transaction(s).")
+
             breach_graph = TemporalMultiGraph()
-            for tx in master_transactions:
-                if tx.timestamp >= breach_time_minutes:
-                    breach_graph.add_edge(tx.sender, tx.receiver, tx.amount, tx.timestamp, tx.original_time_str, tx.id)
+            for tx in post_transactions:
+                breach_graph.add_edge(tx.sender, tx.receiver, tx.amount, tx.timestamp, tx.original_time_str, tx.id)
 
             detector = FraudDetector()
 
@@ -450,12 +493,17 @@ def main():
                 print("    [STATUS: CLEAN] No circular mule rings identified post-breach.")
             else:
                 for ring in mule_rings:
-                    print("\n    [!] ALERT LEVEL: CRITICAL RISK (COMPOSITE SCORE: 95/100)")
-                    print(f"        • Ring Entities      : {ring}")
+                    score, category, volume, span = detector.score_ring(ring, breach_graph)
+                    print(f"\n    [!] ALERT LEVEL: {category} (COMPOSITE SCORE: {score}/100)")
+                    print(f"        • Ring Entities      : {[n.upper() for n in ring]}")
                     print("        • Topology Pattern   : Closed Multi-Node Circular Loop")
+                    print(f"        • Ring Volume        : ${volume:.2f} circulating over {span} minutes")
                     print("        • Forensic Mechanism : Money is routed back to originating entities to artificially")
                     print("                               inflate trading volume and obscure true ownership.")
-                    print("        • Compliance Action  : IMMEDIATE ACCOUNT FREEZE & SAR (Suspicious Activity Report) FILING.")
+                    if score >= 75:
+                        print("        • Compliance Action  : IMMEDIATE ACCOUNT FREEZE & SAR (Suspicious Activity Report) FILING.")
+                    else:
+                        print("        • Compliance Action  : Flag for manual compliance review; consider SAR.")
 
             # 2. Time-Constrained Velocity Engine
             print("\n>>> [ENGINE 2] TIME-CONSTRAINED VELOCITY & FLOW CONSERVATION ANALYSIS")
@@ -467,9 +515,8 @@ def main():
                 for r in reports:
                     print(f"\n    [!] RISK ASSESSMENT: {r.risk_category} (Risk Score: {r.risk_score}/100)")
                     print(f"        • Typology Tag   : {r.typology_tag}")
-                    path_str = " --> ".join([f"{step.node} (Time={step.time_str})" for step in r.path])
-                    print(f"        • Path Traversed : {path_str}")
-                    print(f"        • Layer Count    : {len(r.path) - 1} intermediate hops")
+                    print(f"        • Path Traversed : {r.path_string()}")
+                    print(f"        • Layer Count    : {r.hops} hops ({r.hops - 1} intermediate account(s))")
                     print(f"        • Duration       : {r.total_duration} minutes post-breach")
                     print(f"        • Flow Conserved : {r.retention_ratio:.1f}% (${r.total_volume_in:.2f} In -> ${r.total_volume_out:.2f} Out)")
                     action = "Automated block on cashout node." if r.risk_score >= 75 else (
@@ -478,7 +525,7 @@ def main():
 
             # 3. Dynamic Network & Volume Summary Table
             print()
-            detector.print_network_and_volume_summary(master_transactions, breach_time_minutes)
+            detector.print_network_and_volume_summary(post_transactions, breach_time_minutes)
 
             print("\n==================================================================================")
             print("                               AUDIT COMPLETE                                     ")
