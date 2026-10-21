@@ -4,7 +4,6 @@ from collections import defaultdict
 # ==========================================
 # 1. DATA MODELS
 # ==========================================
-
 class Config:
     MAX_TIME_MINUTES = 1440
     FAST_VELOCITY_LIMIT = 10
@@ -13,6 +12,7 @@ class Config:
     CRITICAL_THRESHOLD = 75
     HIGH_THRESHOLD = 50
     MEDIUM_THRESHOLD = 35
+
 
 class Transaction:
     def __init__(self, tx_id, sender, receiver, amount, timestamp, original_time_str):
