@@ -361,6 +361,20 @@ class FraudDetector:
         for acc in sorted(unique_accounts):
             print(f"{acc:<14} {out_count[acc]:>5} {in_count[acc]:>5} {sent_vol[acc]:>14.2f} {recv_vol[acc]:>14.2f}")
 
+def convert_time_to_minutes(time_str):
+    """'HH:mm' -> minutes after midnight. Raises ValueError if malformed or out of range."""
+    parts = time_str.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError("Time must be in HH:mm format (e.g. 08:35).")
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError:
+        raise ValueError("Time must be in HH:mm format (e.g. 08:35).")
+    if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+        raise ValueError("Time out of range: hours must be 00-23 and minutes 00-59.")
+    return hours * 60 + minutes
+
 
 # ==========================================
 # 5. MAIN MENU SYSTEM
